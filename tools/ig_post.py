@@ -1,4 +1,4 @@
-"""깐밤AI Instagram carousel poster.
+"""깐밤AI Instagram carousel + story poster.
 
 Credentials come from ~/.kkanbam/.env (never committed, never printed):
   INSTAGRAM_ACCESS_TOKEN, INSTAGRAM_USER_ID, INSTAGRAM_API_BASE (optional)
@@ -7,11 +7,11 @@ usage:
   python3 ig_post.py check                      -> prints POSTED_TODAY <permalink> if a carousel (CAROUSEL_ALBUM) exists for today (Asia/Seoul), else NOT_POSTED
   python3 ig_post.py post <YYYY-MM-DD> <caption.txt>
         -> uses cards/<date>/*.png from this repo (must already be pushed), creates carousel, publishes, prints PUBLISHED <id> <permalink>
-  python3 ig_post.py reel-check                 -> prints REEL_POSTED_TODAY <permalink> if a Reel exists for today (Asia/Seoul), else REEL_NOT_POSTED
-  python3 ig_post.py reel <video repo-relative path> <caption.txt> [--force]
-        -> video must already be pushed to main (e.g. cards/<dir>/reel.mp4; make it with make_reel.py).
-           Skips with REEL_POSTED_TODAY unless --force. Creates REELS container (share_to_feed=true),
-           polls status every 10s (max 5 min), publishes, prints REEL_PUBLISHED <id> <permalink>
+  python3 ig_post.py story-check                -> prints STORY_POSTED_TODAY <id> if a story exists for today (Asia/Seoul), else STORY_NOT_POSTED
+  python3 ig_post.py story <image repo-relative path> [--force]
+        -> image must already be pushed to main (e.g. cards/<date>/story.png; make it with make_story.py).
+           Skips with STORY_POSTED_TODAY <id> unless --force. Creates STORIES container (image_url),
+           waits for FINISHED, publishes, prints STORY_PUBLISHED <id>
 """
 import json, os, sys, time, urllib.parse, urllib.request, urllib.error, pathlib, datetime
 
@@ -63,27 +63,17 @@ def _today_media(match):
     return None
 
 
-def posted_today():  # carousels only, so a Reel is never mistaken for today's cards
+def posted_today():  # carousels only, so other media types are never mistaken for today's cards
     return _today_media(lambda m: m.get("media_type") == "CAROUSEL_ALBUM")
 
 
-def reel_posted_today():
-    return _today_media(lambda m: m.get("media_product_type") == "REELS")
-
-
-def wait_video(cid, interval=10, limit=300):
-    waited = 0
-    while True:
-        r = call("GET", cid, fields="status_code,status")
-        s = r.get("status_code")
-        if s == "FINISHED":
-            return
-        if s in ("ERROR", "EXPIRED"):
-            raise SystemExit(f"container {cid} {s}: {str(r.get('status', '')).replace(TOKEN, '***')}")
-        if waited >= limit:
-            raise SystemExit(f"container {cid} timeout after {limit}s (last status {s})")
-        time.sleep(interval)
-        waited += interval
+def story_posted_today():
+    today = datetime.datetime.now(KST).date()
+    for m in call("GET", f"{UID}/stories", fields="id,timestamp").get("data", []):
+        ts = datetime.datetime.strptime(m["timestamp"], "%Y-%m-%dT%H:%M:%S%z").astimezone(KST)
+        if ts.date() == today:
+            return m["id"]
+    return None
 
 
 cmd = sys.argv[1]
@@ -108,26 +98,26 @@ elif cmd == "post":
     wait_ready(car)
     mid = call("POST", f"{UID}/media_publish", creation_id=car)["id"]
     print("PUBLISHED", mid, call("GET", mid, fields="permalink").get("permalink"))
-elif cmd == "reel-check":
-    p = reel_posted_today()
-    print(f"REEL_POSTED_TODAY {p}" if p else "REEL_NOT_POSTED")
-elif cmd == "reel":
+elif cmd == "story-check":
+    sid = story_posted_today()
+    print(f"STORY_POSTED_TODAY {sid}" if sid else "STORY_NOT_POSTED")
+elif cmd == "story":
     args = [a for a in sys.argv[2:] if a != "--force"]
     force = "--force" in sys.argv[2:]
-    if len(args) != 2:
-        raise SystemExit("usage: ig_post.py reel <video repo-relative path> <caption.txt> [--force]")
-    rel, cap = args[0].strip("/"), pathlib.Path(args[1]).read_text().strip()
+    if len(args) != 1:
+        raise SystemExit("usage: ig_post.py story <image repo-relative path> [--force]")
+    rel = args[0].strip("/")
     if not (REPO / rel).is_file():
-        raise SystemExit(f"video not found in repo: {rel}")
+        raise SystemExit(f"image not found in repo: {rel}")
     if not force:
-        p = reel_posted_today()
-        if p:
-            print(f"REEL_POSTED_TODAY {p}")
+        sid = story_posted_today()
+        if sid:
+            print(f"STORY_POSTED_TODAY {sid}")
             sys.exit(0)
-    video_url = f"{RAW_ROOT}/{urllib.parse.quote(rel)}"
-    cid = call("POST", f"{UID}/media", media_type="REELS", video_url=video_url, caption=cap, share_to_feed="true")["id"]
-    wait_video(cid)
+    image_url = f"{RAW_ROOT}/{urllib.parse.quote(rel)}"
+    cid = call("POST", f"{UID}/media", media_type="STORIES", image_url=image_url)["id"]
+    wait_ready(cid)
     mid = call("POST", f"{UID}/media_publish", creation_id=cid)["id"]
-    print("REEL_PUBLISHED", mid, call("GET", mid, fields="permalink").get("permalink"))
+    print("STORY_PUBLISHED", mid)
 else:
     raise SystemExit(f"unknown command: {cmd}")
